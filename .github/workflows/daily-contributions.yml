@@ -1,0 +1,38 @@
+name: Daily Contribution Farm
+
+on:
+  schedule:
+    - cron: '0 12 * * *'
+  workflow_dispatch:
+    inputs:
+      commit_count:
+        description: 'Number of daily contributions'
+        required: false
+        default: '5'
+
+permissions:
+  contents: write
+
+jobs:
+  farm:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Run contribution farm
+        env:
+          FARM_COMMIT_COUNT: ${{ github.event.inputs.commit_count || '5' }}
+          FARM_AUTHOR_NAME: ${{ vars.FARM_AUTHOR_NAME || 'Syqopat' }}
+          FARM_AUTHOR_EMAIL: ${{ vars.FARM_AUTHOR_EMAIL || '203693835+Syqopat@users.noreply.github.com' }}
+          FARM_BRANCH: main
+        run: |
+          python farm.py --count "${FARM_COMMIT_COUNT}" --author-name "${FARM_AUTHOR_NAME}" --author-email "${FARM_AUTHOR_EMAIL}" --branch "${FARM_BRANCH}" --push
