@@ -72,13 +72,22 @@ To register Contribution Farm to run automatically every day on Windows:
 python farm.py --install-task --task-time "12:00PM"
 ```
 
+The scheduled task is configured with `pythonw.exe`, `-Hidden`, and `CREATE_NO_WINDOW`, ensuring that no terminal window, console, or popup appears when it runs.
+
 To remove the scheduled task:
 
 ```bash
 python farm.py --uninstall-task
 ```
 
-### 2. GitHub Actions (Daily Cloud Automation)
+### 2. Instant Silent Execution (`run_silent.vbs`)
+
+To run the farm silently in the background on demand without any command prompt window:
+
+- Double-click `run_silent.vbs`, or
+- Run `wscript.exe run_silent.vbs` from terminal or shortcut.
+
+### 3. GitHub Actions (Daily Cloud Automation)
 
 Contribution Farm runs in GitHub Actions every day at 12:00 UTC. Ensure workflow write permissions are active:
 

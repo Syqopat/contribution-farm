@@ -7,6 +7,14 @@ import subprocess
 import sys
 import uuid
 
+if sys.platform == "win32":
+    if sys.stdout is None:
+        sys.stdout = open(os.devnull, "w", encoding="utf-8")
+    if sys.stderr is None:
+        sys.stderr = open(os.devnull, "w", encoding="utf-8")
+
+NO_WINDOW_FLAG = 0x08000000 if sys.platform == "win32" else 0
+
 DEFAULT_CONFIG = {
     "schedule": {
         "mode": "random",
@@ -28,6 +36,14 @@ DEFAULT_CONFIG = {
         "event_id": 100
     }
 }
+
+def get_silent_python_executable():
+    current_exe = sys.executable
+    dir_name = os.path.dirname(current_exe)
+    candidate = os.path.join(dir_name, "pythonw.exe")
+    if os.path.exists(candidate):
+        return candidate
+    return current_exe
 
 def load_configuration(config_file_path):
     if not os.path.exists(config_file_path):
@@ -73,7 +89,8 @@ def write_windows_event_log(message, event_type="Information", event_id=100, log
                 ["powershell", "-NoProfile", "-Command", powershell_command],
                 capture_output=True,
                 text=True,
-                check=False
+                check=False,
+                creationflags=NO_WINDOW_FLAG
             )
             return True
         except Exception:
@@ -110,27 +127,33 @@ def parse_arguments():
     parser.add_argument("--data-file", type=str, help="Path to activity tracking JSON file.")
     parser.add_argument("--dry-run", action="store_true", help="Simulate run without making commits.")
     parser.add_argument("--push", action="store_true", help="Push commits to remote repository.")
-    parser.add_argument("--install-task", action="store_true", help="Register daily task in Windows Task Scheduler.")
+    parser.add_argument("--install-task", action="store_true", help="Register silent daily task in Windows Task Scheduler.")
     parser.add_argument("--uninstall-task", action="store_true", help="Unregister daily task from Windows Task Scheduler.")
     parser.add_argument("--task-time", type=str, default="12:00PM", help="Daily execution time for Windows Task Scheduler.")
     return parser.parse_args()
 
 def install_windows_task(task_name="ContributionFarmDaily", task_time="12:00PM"):
-    python_exe = sys.executable
+    python_exe = get_silent_python_executable()
     script_path = os.path.abspath(__file__)
     working_dir = os.path.dirname(script_path)
     cmd = (
         f"$action = New-ScheduledTaskAction -Execute '{python_exe}' "
         f"-Argument '\"{script_path}\" --push' -WorkingDirectory '{working_dir}'; "
         f"$trigger = New-ScheduledTaskTrigger -Daily -At '{task_time}'; "
-        f"$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries; "
-        f"Register-ScheduledTask -TaskName '{task_name}' -Action $action -Trigger $trigger -Settings $settings -Force -Description 'Daily Contribution Farm Runner'"
+        f"$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries "
+        f"-DontStopIfGoingOnBatteries -StartWhenAvailable -Hidden; "
+        f"Register-ScheduledTask -TaskName '{task_name}' -Action $action -Trigger $trigger -Settings $settings -Force -Description 'Daily Silent Contribution Farm Runner'"
     )
-    result = subprocess.run(["powershell", "-NoProfile", "-Command", cmd], capture_output=True, text=True)
+    result = subprocess.run(
+        ["powershell", "-NoProfile", "-Command", cmd],
+        capture_output=True,
+        text=True,
+        creationflags=NO_WINDOW_FLAG
+    )
     if result.returncode == 0:
-        print(f"Windows Task Scheduler: '{task_name}' registered successfully to run daily at {task_time}.")
+        print(f"Windows Task Scheduler: '{task_name}' registered successfully as silent background task at {task_time} (using {os.path.basename(python_exe)}).")
         write_windows_event_log(
-            f"ContributionFarm: Scheduled daily task '{task_name}' registered for {task_time}.",
+            f"ContributionFarm: Silent daily task '{task_name}' registered for {task_time} with {os.path.basename(python_exe)}.",
             event_type="Information",
             event_id=100
         )
@@ -139,7 +162,12 @@ def install_windows_task(task_name="ContributionFarmDaily", task_time="12:00PM")
 
 def uninstall_windows_task(task_name="ContributionFarmDaily"):
     cmd = f"Unregister-ScheduledTask -TaskName '{task_name}' -Confirm:$false"
-    result = subprocess.run(["powershell", "-NoProfile", "-Command", cmd], capture_output=True, text=True)
+    result = subprocess.run(
+        ["powershell", "-NoProfile", "-Command", cmd],
+        capture_output=True,
+        text=True,
+        creationflags=NO_WINDOW_FLAG
+    )
     if result.returncode == 0:
         print(f"Windows Task Scheduler: '{task_name}' unregistered successfully.")
         write_windows_event_log(
@@ -188,7 +216,8 @@ def execute_git(args, env=None):
         ["git"] + args,
         capture_output=True,
         text=True,
-        env=process_env
+        env=process_env,
+        creationflags=NO_WINDOW_FLAG
     )
     if result.returncode != 0:
         raise RuntimeError(f"Git command failed: git {' '.join(args)}\n{result.stderr.strip()}")
