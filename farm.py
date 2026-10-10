@@ -15,12 +15,37 @@ if sys.platform == "win32":
 
 NO_WINDOW_FLAG = 0x08000000 if sys.platform == "win32" else 0
 
+REALISTIC_COMMIT_TEMPLATES = [
+    "feat(engine): refine background telemetry dispatcher",
+    "fix(ledger): correct sequential activity indexing",
+    "perf(core): optimize memory usage in payload serialization",
+    "refactor(pipeline): simplify state persistence handler",
+    "test(suite): add validation cases for date offset generator",
+    "docs(readme): expand documentation on telemetry integration",
+    "chore(deps): update routine ledger verification checksum",
+    "style(format): standardize event logging payload structure",
+    "feat(worker): enhance jitter distribution algorithm",
+    "fix(sync): prevent race condition during ledger rotation",
+    "perf(io): streamline json serialization write buffer",
+    "refactor(utils): decompose date computation helpers",
+    "test(farm): expand coverage for weekend scheduler modes",
+    "chore(build): refresh workflow execution prerequisites",
+    "feat(logger): improve Windows event log formatting"
+]
+
 DEFAULT_CONFIG = {
     "schedule": {
         "mode": "random",
         "fixed_count": 5,
         "min_count": 3,
-        "max_count": 7
+        "max_count": 7,
+        "weekend_mode": "reduce",
+        "weekend_min": 1,
+        "weekend_max": 2,
+        "skip_weekends": False,
+        "message_mode": "realistic",
+        "jitter_enabled": True,
+        "jitter_spread_minutes": 180
     },
     "git": {
         "author_name": "Syqopat",
@@ -61,6 +86,53 @@ def load_configuration(config_file_path):
     except Exception:
         return DEFAULT_CONFIG
 
+def generate_commit_message(index, total, mode="realistic"):
+    if mode == "realistic":
+        template = random.choice(REALISTIC_COMMIT_TEMPLATES)
+        return f"{template} [{index}/{total}]"
+    return f"chore(farm): update daily activity record [{index}/{total}]"
+
+def calculate_commit_timestamp(index, total, base_datetime=None, jitter_enabled=True, spread_minutes=180):
+    if base_datetime is None:
+        base_datetime = datetime.datetime.now(datetime.timezone.utc)
+    if not jitter_enabled or total <= 1:
+        return base_datetime
+    step = spread_minutes / total
+    minutes_before = spread_minutes - ((index - 1) * step) + random.randint(-4, 4)
+    minutes_before = max(0, minutes_before)
+    return base_datetime - datetime.timedelta(minutes=minutes_before)
+
+def determine_contribution_count(schedule_config, args, target_date=None):
+    if args.count is not None:
+        return max(1, args.count)
+    if target_date is None:
+        target_date = datetime.datetime.now(datetime.timezone.utc)
+    is_weekend = target_date.weekday() in (5, 6)
+    if is_weekend:
+        if args.skip_weekends or schedule_config.get("skip_weekends", False):
+            print("Weekend detected and skip_weekends is enabled. Skipping contributions.")
+            return 0
+        weekend_mode = schedule_config.get("weekend_mode", "reduce")
+        if weekend_mode == "reduce":
+            w_min = schedule_config.get("weekend_min", 1)
+            w_max = schedule_config.get("weekend_max", 2)
+            if w_min > w_max:
+                w_min, w_max = w_max, w_min
+            chosen = random.randint(w_min, w_max)
+            print(f"Weekend mode active: selected {chosen} contributions from range [{w_min}, {w_max}].")
+            return chosen
+    mode = "random" if args.randomize else (args.mode or schedule_config.get("mode", "random"))
+    min_val = args.min if args.min is not None else schedule_config.get("min_count", 3)
+    max_val = args.max if args.max is not None else schedule_config.get("max_count", 7)
+    if min_val > max_val:
+        min_val, max_val = max_val, min_val
+    if mode == "random":
+        chosen = random.randint(min_val, max_val)
+        print(f"Randomizer selected {chosen} contributions from range [{min_val}, {max_val}].")
+        return chosen
+    fixed = schedule_config.get("fixed_count", 5)
+    return max(1, fixed)
+
 def write_windows_event_log(message, event_type="Information", event_id=100, log_name="Application"):
     if sys.platform != "win32":
         return False
@@ -96,21 +168,6 @@ def write_windows_event_log(message, event_type="Information", event_id=100, log
         except Exception:
             return False
 
-def determine_contribution_count(schedule_config, args):
-    if args.count is not None:
-        return max(1, args.count)
-    mode = "random" if args.randomize else (args.mode or schedule_config.get("mode", "random"))
-    min_val = args.min if args.min is not None else schedule_config.get("min_count", 3)
-    max_val = args.max if args.max is not None else schedule_config.get("max_count", 7)
-    if min_val > max_val:
-        min_val, max_val = max_val, min_val
-    if mode == "random":
-        chosen = random.randint(min_val, max_val)
-        print(f"Randomizer selected {chosen} contributions from range [{min_val}, {max_val}].")
-        return chosen
-    fixed = schedule_config.get("fixed_count", 5)
-    return max(1, fixed)
-
 def parse_arguments():
     parser = argparse.ArgumentParser(
         description="Automated GitHub contribution generator and activity manager."
@@ -127,6 +184,11 @@ def parse_arguments():
     parser.add_argument("--data-file", type=str, help="Path to activity tracking JSON file.")
     parser.add_argument("--dry-run", action="store_true", help="Simulate run without making commits.")
     parser.add_argument("--push", action="store_true", help="Push commits to remote repository.")
+    parser.add_argument("--skip-weekends", action="store_true", help="Skip generating contributions on weekends.")
+    parser.add_argument("--message-mode", type=str, choices=["realistic", "standard"], help="Commit message template style.")
+    parser.add_argument("--backfill-days", type=int, help="Backfill realistic contributions for the last N days.")
+    parser.add_argument("--backfill-start", type=str, help="Historical backfill start date (YYYY-MM-DD).")
+    parser.add_argument("--backfill-end", type=str, help="Historical backfill end date (YYYY-MM-DD).")
     parser.add_argument("--install-task", action="store_true", help="Register silent daily task in Windows Task Scheduler.")
     parser.add_argument("--uninstall-task", action="store_true", help="Unregister daily task from Windows Task Scheduler.")
     parser.add_argument("--task-time", type=str, default="12:00PM", help="Daily execution time for Windows Task Scheduler.")
@@ -194,9 +256,9 @@ def save_activity_data(file_path, data):
         json.dump(data, file_handle, indent=2, ensure_ascii=False)
         file_handle.write("\n")
 
-def record_activity_entry(file_path, run_id, index, total):
+def record_activity_entry(file_path, run_id, index, total, timestamp=None):
     data = load_activity_data(file_path)
-    now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    now_iso = timestamp or datetime.datetime.now(datetime.timezone.utc).isoformat()
     data["total_contributions"] = data.get("total_contributions", 0) + 1
     data["last_run"] = now_iso
     data.setdefault("history", []).append({
@@ -227,31 +289,92 @@ def configure_git_identity(author_name, author_email):
     execute_git(["config", "user.name", author_name])
     execute_git(["config", "user.email", author_email])
 
-def create_contributions(count, author_name, author_email, data_file, dry_run=False):
+def create_contributions(
+    count,
+    author_name,
+    author_email,
+    data_file,
+    dry_run=False,
+    base_time=None,
+    message_mode="realistic",
+    jitter_enabled=True,
+    spread_minutes=180
+):
     if count <= 0:
-        raise ValueError("Commit count must be greater than zero.")
+        return None, 0
     run_id = str(uuid.uuid4())
     print(f"Starting contribution run {run_id} with count: {count}")
     if not dry_run:
         configure_git_identity(author_name, author_email)
-    git_env = {
-        "GIT_AUTHOR_NAME": author_name,
-        "GIT_AUTHOR_EMAIL": author_email,
-        "GIT_COMMITTER_NAME": author_name,
-        "GIT_COMMITTER_EMAIL": author_email
-    }
     total_cumulative = 0
     for index in range(1, count + 1):
-        total_cumulative = record_activity_entry(data_file, run_id, index, count)
-        message = f"chore(farm): update daily activity record [{index}/{count}]"
+        commit_time = calculate_commit_timestamp(
+            index=index,
+            total=count,
+            base_datetime=base_time,
+            jitter_enabled=jitter_enabled,
+            spread_minutes=spread_minutes
+        )
+        timestamp_iso = commit_time.isoformat()
+        total_cumulative = record_activity_entry(data_file, run_id, index, count, timestamp=timestamp_iso)
+        message = generate_commit_message(index, count, mode=message_mode)
+        formatted_date = commit_time.strftime("%Y-%m-%d %H:%M:%S +0000")
+        git_env = {
+            "GIT_AUTHOR_NAME": author_name,
+            "GIT_AUTHOR_EMAIL": author_email,
+            "GIT_COMMITTER_NAME": author_name,
+            "GIT_COMMITTER_EMAIL": author_email,
+            "GIT_AUTHOR_DATE": formatted_date,
+            "GIT_COMMITTER_DATE": formatted_date
+        }
         if dry_run:
-            print(f"[DRY-RUN] Step {index}/{count} | Cumulative: {total_cumulative} | {message}")
+            print(f"[DRY-RUN] Step {index}/{count} | Date: {formatted_date} | {message}")
         else:
             execute_git(["add", data_file])
             execute_git(["commit", "-m", message], env=git_env)
-            print(f"Committed {index}/{count} (Total: {total_cumulative}): {message}")
+            print(f"Committed {index}/{count} ({formatted_date}): {message}")
     print(f"Successfully processed {count} contribution entries.")
     return run_id, total_cumulative
+
+def backfill_history(
+    start_date_str,
+    end_date_str,
+    author_name,
+    author_email,
+    data_file,
+    schedule_cfg,
+    args
+):
+    start_date = datetime.date.fromisoformat(start_date_str)
+    end_date = datetime.date.fromisoformat(end_date_str)
+    if start_date > end_date:
+        start_date, end_date = end_date, start_date
+    current = start_date
+    total_days = (end_date - start_date).days + 1
+    print(f"Starting historical backfill from {start_date} to {end_date} ({total_days} days)...")
+    total_backfilled = 0
+    message_mode = args.message_mode or schedule_cfg.get("message_mode", "realistic")
+    jitter_enabled = schedule_cfg.get("jitter_enabled", True)
+    spread_minutes = schedule_cfg.get("jitter_spread_minutes", 180)
+    while current <= end_date:
+        target_dt = datetime.datetime.combine(current, datetime.time(14, 30), tzinfo=datetime.timezone.utc)
+        count = determine_contribution_count(schedule_cfg, args, target_date=target_dt)
+        if count > 0:
+            run_id, cum = create_contributions(
+                count=count,
+                author_name=author_name,
+                author_email=author_email,
+                data_file=data_file,
+                dry_run=args.dry_run,
+                base_time=target_dt,
+                message_mode=message_mode,
+                jitter_enabled=jitter_enabled,
+                spread_minutes=spread_minutes
+            )
+            total_backfilled += count
+        current += datetime.timedelta(days=1)
+    print(f"Backfill finished. Generated {total_backfilled} historical contributions.")
+    return total_backfilled
 
 def push_changes(branch):
     print(f"Pushing commits to branch '{branch}'...")
@@ -273,12 +396,49 @@ def main():
     git_cfg = config.get("git", {})
     win_cfg = config.get("windows_event_log", {})
 
-    count = determine_contribution_count(schedule_cfg, args)
     author_name = args.author_name or os.environ.get("FARM_AUTHOR_NAME") or git_cfg.get("author_name", "Syqopat")
     author_email = args.author_email or os.environ.get("FARM_AUTHOR_EMAIL") or git_cfg.get("author_email", "203693835+Syqopat@users.noreply.github.com")
     branch = args.branch or os.environ.get("FARM_BRANCH") or git_cfg.get("branch", "main")
     data_file = args.data_file or git_cfg.get("data_file", "data/activity.json")
     auto_push = args.push or git_cfg.get("auto_push", False)
+    message_mode = args.message_mode or schedule_cfg.get("message_mode", "realistic")
+    jitter_enabled = schedule_cfg.get("jitter_enabled", True)
+    spread_minutes = schedule_cfg.get("jitter_spread_minutes", 180)
+
+    if args.backfill_days:
+        end_d = datetime.date.today() - datetime.timedelta(days=1)
+        start_d = end_d - datetime.timedelta(days=args.backfill_days - 1)
+        backfill_history(
+            start_d.isoformat(),
+            end_d.isoformat(),
+            author_name,
+            author_email,
+            data_file,
+            schedule_cfg,
+            args
+        )
+        if auto_push and not args.dry_run:
+            push_changes(branch)
+        return
+
+    if args.backfill_start and args.backfill_end:
+        backfill_history(
+            args.backfill_start,
+            args.backfill_end,
+            author_name,
+            author_email,
+            data_file,
+            schedule_cfg,
+            args
+        )
+        if auto_push and not args.dry_run:
+            push_changes(branch)
+        return
+
+    count = determine_contribution_count(schedule_cfg, args)
+    if count == 0:
+        print("Scheduled count is 0 for today. No commits to create.")
+        return
 
     start_log_message = (
         f"ContributionFarm started: Target count={count}, Author={author_name}, "
@@ -298,7 +458,10 @@ def main():
             author_name=author_name,
             author_email=author_email,
             data_file=data_file,
-            dry_run=args.dry_run
+            dry_run=args.dry_run,
+            message_mode=message_mode,
+            jitter_enabled=jitter_enabled,
+            spread_minutes=spread_minutes
         )
         if auto_push and not args.dry_run:
             push_changes(branch)

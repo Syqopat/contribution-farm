@@ -3,7 +3,14 @@
     "mode": "random",
     "fixed_count": 5,
     "min_count": 3,
-    "max_count": 7
+    "max_count": 7,
+    "weekend_mode": "reduce",
+    "weekend_min": 1,
+    "weekend_max": 2,
+    "skip_weekends": false,
+    "message_mode": "realistic",
+    "jitter_enabled": true,
+    "jitter_spread_minutes": 180
   },
   "git": {
     "author_name": "Syqopat",

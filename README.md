@@ -27,7 +27,14 @@ The application is controlled by `config.json` at the root of the repository:
     "mode": "random",
     "fixed_count": 5,
     "min_count": 3,
-    "max_count": 7
+    "max_count": 7,
+    "weekend_mode": "reduce",
+    "weekend_min": 1,
+    "weekend_max": 2,
+    "skip_weekends": false,
+    "message_mode": "realistic",
+    "jitter_enabled": true,
+    "jitter_spread_minutes": 180
   },
   "git": {
     "author_name": "Syqopat",
@@ -53,6 +60,13 @@ The application is controlled by `config.json` at the root of the repository:
 | `schedule` | `fixed_count` | Integer | `5` | Exact number of contributions when mode is `"fixed"` |
 | `schedule` | `min_count` | Integer | `3` | Minimum contributions per day when mode is `"random"` |
 | `schedule` | `max_count` | Integer | `7` | Maximum contributions per day when mode is `"random"` |
+| `schedule` | `weekend_mode` | String | `"reduce"` | Weekend quota behavior: `"reduce"` or `"normal"` |
+| `schedule` | `weekend_min` | Integer | `1` | Lower contribution bound for weekends |
+| `schedule` | `weekend_max` | Integer | `2` | Upper contribution bound for weekends |
+| `schedule` | `skip_weekends` | Boolean | `false` | Completely skip contribution generation on weekends |
+| `schedule` | `message_mode` | String | `"realistic"` | Commit message generator: `"realistic"` or `"standard"` |
+| `schedule` | `jitter_enabled` | Boolean | `true` | Naturally spreads commit timestamps across a time window |
+| `schedule` | `jitter_spread_minutes` | Integer | `180` | Distribution window size in minutes |
 | `git` | `author_name` | String | `"Syqopat"` | Git commit author and committer name |
 | `git` | `author_email` | String | `"203693835+Syqopat@users.noreply.github.com"` | Git commit author and committer email |
 | `git` | `branch` | String | `"main"` | Target branch to update and push |
@@ -154,9 +168,44 @@ python farm.py --count 10 --push
 | `--data-file` | String | Custom ledger path |
 | `--dry-run` | Flag | Preview run without creating commits |
 | `--push` | Flag | Push commits upon completion |
+| `--skip-weekends` | Flag | Skip generating contributions on weekends |
+| `--message-mode` | String | Message style (`realistic` or `standard`) |
+| `--backfill-days` | Integer | Backfill contributions for the last N days |
+| `--backfill-start` | String | Historical backfill start date (`YYYY-MM-DD`) |
+| `--backfill-end` | String | Historical backfill end date (`YYYY-MM-DD`) |
 | `--install-task` | Flag | Register Windows scheduled task |
 | `--uninstall-task` | Flag | Unregister Windows scheduled task |
 | `--task-time` | String | Scheduled daily execution time (e.g. `"12:00PM"`) |
+
+## Historical Backfilling
+
+To populate past empty dates on your GitHub contribution graph with realistic contributions:
+
+Backfill the last 14 days:
+
+```bash
+python farm.py --backfill-days 14 --push
+```
+
+Backfill a specific historical date range:
+
+```bash
+python farm.py --backfill-start 2026-09-01 --backfill-end 2026-09-30 --push
+```
+
+## Verified SSH Commit Signing
+
+Contribution Farm automatically creates cryptographically signed Git commits using your configured SSH signing key.
+
+To display the green **Verified** badge next to your commits on GitHub:
+
+1. Copy your public signing key:
+   ```text
+   ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIH8lGFqhlqOYgfafhqMd3gShXO1W8t20AOw+ABMPsdJb 203693835+Syqopat@users.noreply.github.com
+   ```
+2. Navigate to [GitHub SSH and GPG keys](https://github.com/settings/ssh/new).
+3. Set **Key type** to **Signing Key**.
+4. Paste the key and click **Add SSH key**.
 
 ## Running Tests
 

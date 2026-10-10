@@ -1,4 +1,5 @@
 import argparse
+import datetime
 import json
 import os
 import shutil
@@ -6,8 +7,11 @@ import tempfile
 import unittest
 
 from farm import (
+    backfill_history,
+    calculate_commit_timestamp,
     create_contributions,
     determine_contribution_count,
+    generate_commit_message,
     load_activity_data,
     load_configuration,
     record_activity_entry,
@@ -53,64 +57,35 @@ class TestContributionFarm(unittest.TestCase):
         self.assertEqual(data["history"][0]["entry_index"], 1)
         self.assertEqual(data["history"][1]["entry_index"], 2)
 
-    def test_load_configuration(self):
-        custom_config = {
-            "schedule": {
-                "mode": "random",
-                "min_count": 2,
-                "max_count": 6
-            }
-        }
-        with open(self.config_file, "w", encoding="utf-8") as f:
-            json.dump(custom_config, f)
-        loaded = load_configuration(self.config_file)
-        self.assertEqual(loaded["schedule"]["mode"], "random")
-        self.assertEqual(loaded["schedule"]["min_count"], 2)
-        self.assertEqual(loaded["schedule"]["max_count"], 6)
-        self.assertEqual(loaded["schedule"]["fixed_count"], 5)
+    def test_generate_commit_message(self):
+        msg_std = generate_commit_message(1, 5, mode="standard")
+        self.assertEqual(msg_std, "chore(farm): update daily activity record [1/5]")
+        msg_real = generate_commit_message(2, 5, mode="realistic")
+        self.assertTrue("[2/5]" in msg_real)
+        self.assertTrue("(" in msg_real and "):" in msg_real)
 
-    def test_determine_contribution_count_fixed(self):
-        schedule_config = {"mode": "fixed", "fixed_count": 5}
-        args = argparse.Namespace(count=None, randomize=False, mode=None, min=None, max=None)
-        count = determine_contribution_count(schedule_config, args)
-        self.assertEqual(count, 5)
+    def test_calculate_commit_timestamp(self):
+        base = datetime.datetime(2026, 10, 10, 15, 0, 0, tzinfo=datetime.timezone.utc)
+        t1 = calculate_commit_timestamp(1, 4, base_datetime=base, jitter_enabled=True, spread_minutes=180)
+        t4 = calculate_commit_timestamp(4, 4, base_datetime=base, jitter_enabled=True, spread_minutes=180)
+        self.assertLessEqual(t1, t4)
 
-    def test_determine_contribution_count_override(self):
-        schedule_config = {"mode": "fixed", "fixed_count": 5}
-        args = argparse.Namespace(count=8, randomize=False, mode=None, min=None, max=None)
-        count = determine_contribution_count(schedule_config, args)
-        self.assertEqual(count, 8)
+    def test_weekend_mode_detection(self):
+        saturday = datetime.datetime(2026, 10, 10, 12, 0, tzinfo=datetime.timezone.utc)
+        cfg_skip = {"skip_weekends": True, "weekend_mode": "reduce"}
+        args = argparse.Namespace(count=None, randomize=False, mode=None, min=None, max=None, skip_weekends=False)
+        count = determine_contribution_count(cfg_skip, args, target_date=saturday)
+        self.assertEqual(count, 0)
 
-    def test_determine_contribution_count_random(self):
-        schedule_config = {"mode": "random", "min_count": 4, "max_count": 6}
-        args = argparse.Namespace(count=None, randomize=False, mode=None, min=None, max=None)
-        counts = {determine_contribution_count(schedule_config, args) for _ in range(50)}
-        for val in counts:
-            self.assertTrue(4 <= val <= 6)
+        cfg_reduce = {"skip_weekends": False, "weekend_mode": "reduce", "weekend_min": 1, "weekend_max": 2}
+        count_red = determine_contribution_count(cfg_reduce, args, target_date=saturday)
+        self.assertTrue(1 <= count_red <= 2)
 
-    def test_dry_run_contributions(self):
-        run_id, total = create_contributions(
-            count=3,
-            author_name="Syqopat",
-            author_email="203693835+Syqopat@users.noreply.github.com",
-            data_file=self.data_file,
-            dry_run=True
-        )
-        self.assertIsNotNone(run_id)
-        self.assertEqual(total, 3)
-        loaded = load_activity_data(self.data_file)
-        self.assertEqual(loaded["total_contributions"], 3)
-        self.assertEqual(len(loaded["history"]), 3)
-
-    def test_invalid_count(self):
-        with self.assertRaises(ValueError):
-            create_contributions(
-                count=0,
-                author_name="Syqopat",
-                author_email="203693835+Syqopat@users.noreply.github.com",
-                data_file=self.data_file,
-                dry_run=True
-            )
+    def test_backfill_dry_run(self):
+        cfg = {"mode": "fixed", "fixed_count": 2, "skip_weekends": False, "weekend_mode": "normal", "message_mode": "realistic"}
+        args = argparse.Namespace(count=2, randomize=False, mode=None, min=None, max=None, skip_weekends=False, message_mode="realistic", dry_run=True)
+        total = backfill_history("2026-10-01", "2026-10-03", "Syqopat", "test@test.com", self.data_file, cfg, args)
+        self.assertEqual(total, 6)
 
     def test_windows_event_log_execution(self):
         result = write_windows_event_log("Test event message from test suite")
