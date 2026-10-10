@@ -5,10 +5,26 @@ on:
     - cron: '0 12 * * *'
   workflow_dispatch:
     inputs:
+      mode:
+        description: 'Contribution selection mode (fixed or random)'
+        required: false
+        default: 'random'
+        type: choice
+        options:
+          - random
+          - fixed
       commit_count:
-        description: 'Number of daily contributions'
+        description: 'Fixed contribution count (only if mode is fixed)'
         required: false
         default: '5'
+      min_count:
+        description: 'Minimum contributions (for random mode)'
+        required: false
+        default: '3'
+      max_count:
+        description: 'Maximum contributions (for random mode)'
+        required: false
+        default: '7'
 
 permissions:
   contents: write
@@ -30,9 +46,27 @@ jobs:
 
       - name: Run contribution farm
         env:
-          FARM_COMMIT_COUNT: ${{ github.event.inputs.commit_count || '5' }}
+          INPUT_MODE: ${{ github.event.inputs.mode || '' }}
+          INPUT_COUNT: ${{ github.event.inputs.commit_count || '' }}
+          INPUT_MIN: ${{ github.event.inputs.min_count || '' }}
+          INPUT_MAX: ${{ github.event.inputs.max_count || '' }}
           FARM_AUTHOR_NAME: ${{ vars.FARM_AUTHOR_NAME || 'Syqopat' }}
           FARM_AUTHOR_EMAIL: ${{ vars.FARM_AUTHOR_EMAIL || '203693835+Syqopat@users.noreply.github.com' }}
           FARM_BRANCH: main
         run: |
-          python farm.py --count "${FARM_COMMIT_COUNT}" --author-name "${FARM_AUTHOR_NAME}" --author-email "${FARM_AUTHOR_EMAIL}" --branch "${FARM_BRANCH}" --push
+          ARGS="--push --branch ${FARM_BRANCH} --author-name ${FARM_AUTHOR_NAME} --author-email ${FARM_AUTHOR_EMAIL}"
+          if [ -n "${INPUT_MODE}" ]; then
+            ARGS="${ARGS} --mode ${INPUT_MODE}"
+          fi
+          if [ "${INPUT_MODE}" = "fixed" ] && [ -n "${INPUT_COUNT}" ]; then
+            ARGS="${ARGS} --count ${INPUT_COUNT}"
+          fi
+          if [ "${INPUT_MODE}" = "random" ] || [ -z "${INPUT_MODE}" ]; then
+            if [ -n "${INPUT_MIN}" ]; then
+              ARGS="${ARGS} --min ${INPUT_MIN}"
+            fi
+            if [ -n "${INPUT_MAX}" ]; then
+              ARGS="${ARGS} --max ${INPUT_MAX}"
+            fi
+          fi
+          python farm.py ${ARGS}

@@ -1,0 +1,21 @@
+{
+  "schedule": {
+    "mode": "random",
+    "fixed_count": 5,
+    "min_count": 3,
+    "max_count": 7
+  },
+  "git": {
+    "author_name": "Syqopat",
+    "author_email": "203693835+Syqopat@users.noreply.github.com",
+    "branch": "main",
+    "auto_push": true,
+    "data_file": "data/activity.json"
+  },
+  "windows_event_log": {
+    "enabled": true,
+    "log_name": "Application",
+    "source_name": "Application",
+    "event_id": 100
+  }
+}

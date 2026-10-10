@@ -5,88 +5,153 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python Version](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 
-Contribution Farm is an automated open-source GitHub activity engine and contribution manager. It executes scheduled daily commits (defaulting to 5 contributions daily) to keep repository metrics up to date while recording structured telemetry in an activity ledger.
+Contribution Farm is an automated open-source GitHub activity engine and contribution manager. It provides configurable daily runs, dynamic randomized contribution ranges, automatic Windows Event Log telemetry, and native Windows Task Scheduler integration alongside cloud GitHub Actions workflows.
 
-## Features
+## Key Features
 
-- **Automated Daily Schedule**: Runs automatically once per day via GitHub Actions cron schedule.
-- **Configurable Contribution Quota**: Default of 5 contributions per day, adjustable via workflow inputs or command-line parameters.
+- **Automated Daily Scheduling**: Operates daily via GitHub Actions in the cloud and natively via Windows Task Scheduler locally.
+- **Configurable Contribution Engine**: Fully customizable via `config.json` with support for fixed quotas or dynamic randomized ranges.
+- **Dynamic Randomization**: Generates a randomized number of contributions within a specified range (for example, between 3 and 7 commits per day) to simulate realistic developer activity patterns.
+- **Windows Event Log Telemetry**: Automatically records run lifecycle events (start status, commit counts, cumulative totals, errors) directly into the Windows Application Event Log.
+- **Task Scheduler Integration**: One-command installation and uninstallation of daily background tasks on Windows.
 - **Structured Activity Ledger**: Tracks every contribution batch with UUIDs, timestamps, cumulative counts, and run parameters inside `data/activity.json`.
-- **Zero Third-Party Dependencies**: Pure Python standard library implementation requiring no external package installations.
-- **Manual Trigger Support**: Trigger runs anytime with custom commit counts via GitHub Actions `workflow_dispatch`.
-- **Continuous Integration**: Complete unit test suite with CI validation across pull requests and pushes.
+- **Zero Third-Party Dependencies**: Pure Python standard library implementation with optional native `pywin32` / PowerShell fallbacks.
 
-## Architecture
+## Configuration (`config.json`)
 
-The system operates through an automated pipeline:
+The application is controlled by `config.json` at the root of the repository:
 
-1. **Trigger**: GitHub Actions scheduler activates the workflow daily at 12:00 UTC (or manually through `workflow_dispatch`).
-2. **Execution**: The runner invokes `farm.py` with the desired contribution count and author metadata.
-3. **Ledger Update**: The script updates `data/activity.json` incrementally, calculating cumulative statistics.
-4. **Git Operations**: Individual git commits are generated adhering to Conventional Commits standards.
-5. **Synchronization**: Commits are pushed to the target branch (`main`), updating GitHub activity graphs.
+```json
+{
+  "schedule": {
+    "mode": "random",
+    "fixed_count": 5,
+    "min_count": 3,
+    "max_count": 7
+  },
+  "git": {
+    "author_name": "Syqopat",
+    "author_email": "203693835+Syqopat@users.noreply.github.com",
+    "branch": "main",
+    "auto_push": true,
+    "data_file": "data/activity.json"
+  },
+  "windows_event_log": {
+    "enabled": true,
+    "log_name": "Application",
+    "source_name": "Application",
+    "event_id": 100
+  }
+}
+```
 
-## Repository Setup
+### Configuration Fields
 
-To ensure automated runs have permission to write to your repository:
+| Section | Key | Type | Default | Description |
+| --- | --- | --- | --- | --- |
+| `schedule` | `mode` | String | `"random"` | Execution mode: `"random"` or `"fixed"` |
+| `schedule` | `fixed_count` | Integer | `5` | Exact number of contributions when mode is `"fixed"` |
+| `schedule` | `min_count` | Integer | `3` | Minimum contributions per day when mode is `"random"` |
+| `schedule` | `max_count` | Integer | `7` | Maximum contributions per day when mode is `"random"` |
+| `git` | `author_name` | String | `"Syqopat"` | Git commit author and committer name |
+| `git` | `author_email` | String | `"203693835+Syqopat@users.noreply.github.com"` | Git commit author and committer email |
+| `git` | `branch` | String | `"main"` | Target branch to update and push |
+| `git` | `auto_push` | Boolean | `true` | Automatically pushes commits to remote |
+| `git` | `data_file` | String | `"data/activity.json"` | Path to JSON activity ledger |
+| `windows_event_log` | `enabled` | Boolean | `true` | Enables writing telemetry to Windows Event Log |
+| `windows_event_log` | `log_name` | String | `"Application"` | Windows Event Log channel |
+| `windows_event_log` | `event_id` | Integer | `100` | Event ID used for recorded entries |
+
+## Automation Setup
+
+### 1. Windows Task Scheduler (Daily Local Automation)
+
+To register Contribution Farm to run automatically every day on Windows:
+
+```bash
+python farm.py --install-task --task-time "12:00PM"
+```
+
+To remove the scheduled task:
+
+```bash
+python farm.py --uninstall-task
+```
+
+### 2. GitHub Actions (Daily Cloud Automation)
+
+Contribution Farm runs in GitHub Actions every day at 12:00 UTC. Ensure workflow write permissions are active:
 
 1. Open your repository on GitHub.
-2. Navigate to **Settings** > **Actions** > **General**.
-3. Scroll to **Workflow permissions**.
-4. Select **Read and write permissions**.
-5. Click **Save**.
+2. Go to **Settings** > **Actions** > **General**.
+3. Under **Workflow permissions**, select **Read and write permissions**.
+4. Save your changes.
 
-## Local Usage
+You can also trigger runs on demand via the **Actions** tab with custom mode and contribution counts.
 
-### Prerequisites
+## Windows Event Log Telemetry
 
-- Python 3.10 or higher
-- Git installed and configured
+Every execution writes telemetry events to the Windows `Application` log:
 
-### Running the Engine
+- **Start Event**: Logs execution start, targeted contribution quota, branch, and configuration mode.
+- **Completion Event**: Logs the successful run ID, total contributions produced, and overall cumulative count.
+- **Error Event**: Logs any uncaught exceptions with full diagnostic details.
 
-Perform a dry run to inspect the contribution plan without making git commits:
+To view logged events in PowerShell:
 
-```bash
-python farm.py --count 5 --dry-run
+```powershell
+Get-EventLog -LogName Application -Source Application -Newest 5 | Format-List TimeGenerated, Message
 ```
 
-Generate 5 local commits:
+## Local CLI Usage
+
+Run using `config.json` settings:
 
 ```bash
-python farm.py --count 5
+python farm.py --push
 ```
 
-Generate 5 commits and push them to remote:
+Generate a randomized number of contributions between 2 and 6:
 
 ```bash
-python farm.py --count 5 --push
+python farm.py --randomize --min 2 --max 6 --push
 ```
 
-### Command Line Options
+Run in dry-run mode to preview without committing:
 
-| Option | Type | Default | Description |
-| --- | --- | --- | --- |
-| `--count` | Integer | `5` | Number of contributions to generate in the current run |
-| `--author-name` | String | `Syqopat` | Git author and committer name |
-| `--author-email` | String | `203693835+Syqopat@users.noreply.github.com` | Git author and committer email |
-| `--branch` | String | `main` | Target branch to commit and push |
-| `--data-file` | String | `data/activity.json` | Path to the activity tracking JSON file |
-| `--dry-run` | Flag | `False` | Simulates the run without executing git commits |
-| `--push` | Flag | `False` | Pushes generated commits to the remote repository |
+```bash
+python farm.py --dry-run
+```
 
-## Environment Variables
+Generate an explicit fixed count of 10 contributions:
 
-| Variable | Description |
-| --- | --- |
-| `FARM_COMMIT_COUNT` | Default number of contributions when `--count` is omitted |
-| `FARM_AUTHOR_NAME` | Default git author name |
-| `FARM_AUTHOR_EMAIL` | Default git author email |
-| `FARM_BRANCH` | Default target git branch |
+```bash
+python farm.py --count 10 --push
+```
+
+### Command Line Arguments
+
+| Argument | Type | Description |
+| --- | --- | --- |
+| `--config` | String | Path to custom configuration JSON file |
+| `--mode` | String | Set mode (`fixed` or `random`) |
+| `--randomize` | Flag | Enable random mode |
+| `--min` | Integer | Lower bound for random contribution count |
+| `--max` | Integer | Upper bound for random contribution count |
+| `--count` | Integer | Override with an exact contribution count |
+| `--author-name` | String | Git author name override |
+| `--author-email` | String | Git author email override |
+| `--branch` | String | Target git branch override |
+| `--data-file` | String | Custom ledger path |
+| `--dry-run` | Flag | Preview run without creating commits |
+| `--push` | Flag | Push commits upon completion |
+| `--install-task` | Flag | Register Windows scheduled task |
+| `--uninstall-task` | Flag | Unregister Windows scheduled task |
+| `--task-time` | String | Scheduled daily execution time (e.g. `"12:00PM"`) |
 
 ## Running Tests
 
-Execute the unit test suite:
+Execute all unit tests:
 
 ```bash
 python -m unittest discover tests

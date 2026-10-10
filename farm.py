@@ -2,55 +2,153 @@ import argparse
 import datetime
 import json
 import os
+import random
 import subprocess
 import sys
 import uuid
+
+DEFAULT_CONFIG = {
+    "schedule": {
+        "mode": "random",
+        "fixed_count": 5,
+        "min_count": 3,
+        "max_count": 7
+    },
+    "git": {
+        "author_name": "Syqopat",
+        "author_email": "203693835+Syqopat@users.noreply.github.com",
+        "branch": "main",
+        "auto_push": True,
+        "data_file": "data/activity.json"
+    },
+    "windows_event_log": {
+        "enabled": True,
+        "log_name": "Application",
+        "source_name": "Application",
+        "event_id": 100
+    }
+}
+
+def load_configuration(config_file_path):
+    if not os.path.exists(config_file_path):
+        return DEFAULT_CONFIG
+    try:
+        with open(config_file_path, "r", encoding="utf-8") as file_handle:
+            loaded_data = json.load(file_handle)
+            merged = DEFAULT_CONFIG.copy()
+            for section_key, section_val in loaded_data.items():
+                if isinstance(section_val, dict) and section_key in merged:
+                    merged[section_key] = {**merged[section_key], **section_val}
+                else:
+                    merged[section_key] = section_val
+            return merged
+    except Exception:
+        return DEFAULT_CONFIG
+
+def write_windows_event_log(message, event_type="Information", event_id=100, log_name="Application"):
+    if sys.platform != "win32":
+        return False
+    try:
+        import win32evtlog
+        type_mapping = {
+            "Information": win32evtlog.EVENTLOG_INFORMATION_TYPE,
+            "Warning": win32evtlog.EVENTLOG_WARNING_TYPE,
+            "Error": win32evtlog.EVENTLOG_ERROR_TYPE,
+        }
+        log_type = type_mapping.get(event_type, win32evtlog.EVENTLOG_INFORMATION_TYPE)
+        handle = win32evtlog.OpenEventLog(None, log_name)
+        win32evtlog.ReportEvent(handle, log_type, 0, event_id, None, [message], None)
+        win32evtlog.CloseEventLog(handle)
+        return True
+    except Exception:
+        try:
+            sanitized_message = message.replace("'", "''").replace('"', '`"')
+            powershell_command = (
+                f"$log = New-Object System.Diagnostics.EventLog('{log_name}'); "
+                f"$log.Source = '{log_name}'; "
+                f"$log.WriteEntry('{sanitized_message}', "
+                f"[System.Diagnostics.EventLogEntryType]::{event_type}, {event_id})"
+            )
+            subprocess.run(
+                ["powershell", "-NoProfile", "-Command", powershell_command],
+                capture_output=True,
+                text=True,
+                check=False
+            )
+            return True
+        except Exception:
+            return False
+
+def determine_contribution_count(schedule_config, args):
+    if args.count is not None:
+        return max(1, args.count)
+    mode = "random" if args.randomize else (args.mode or schedule_config.get("mode", "random"))
+    min_val = args.min if args.min is not None else schedule_config.get("min_count", 3)
+    max_val = args.max if args.max is not None else schedule_config.get("max_count", 7)
+    if min_val > max_val:
+        min_val, max_val = max_val, min_val
+    if mode == "random":
+        chosen = random.randint(min_val, max_val)
+        print(f"Randomizer selected {chosen} contributions from range [{min_val}, {max_val}].")
+        return chosen
+    fixed = schedule_config.get("fixed_count", 5)
+    return max(1, fixed)
 
 def parse_arguments():
     parser = argparse.ArgumentParser(
         description="Automated GitHub contribution generator and activity manager."
     )
-    parser.add_argument(
-        "--count",
-        type=int,
-        default=int(os.environ.get("FARM_COMMIT_COUNT", 5)),
-        help="Number of contributions to generate in this run."
-    )
-    parser.add_argument(
-        "--author-name",
-        type=str,
-        default=os.environ.get("FARM_AUTHOR_NAME", "Syqopat"),
-        help="Author name for the git commits."
-    )
-    parser.add_argument(
-        "--author-email",
-        type=str,
-        default=os.environ.get("FARM_AUTHOR_EMAIL", "203693835+Syqopat@users.noreply.github.com"),
-        help="Author email for the git commits."
-    )
-    parser.add_argument(
-        "--branch",
-        type=str,
-        default=os.environ.get("FARM_BRANCH", "main"),
-        help="Target git branch to commit and push."
-    )
-    parser.add_argument(
-        "--data-file",
-        type=str,
-        default="data/activity.json",
-        help="Path to activity tracking JSON file."
-    )
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Simulate contributions without creating git commits."
-    )
-    parser.add_argument(
-        "--push",
-        action="store_true",
-        help="Push created commits to remote repository upon completion."
-    )
+    parser.add_argument("--config", type=str, default="config.json", help="Path to config.json file.")
+    parser.add_argument("--mode", type=str, choices=["fixed", "random"], help="Execution mode: fixed or random.")
+    parser.add_argument("--randomize", action="store_true", help="Force random contribution generation.")
+    parser.add_argument("--min", type=int, help="Minimum contributions for random mode.")
+    parser.add_argument("--max", type=int, help="Maximum contributions for random mode.")
+    parser.add_argument("--count", type=int, help="Fixed contribution count override.")
+    parser.add_argument("--author-name", type=str, help="Author name for git commits.")
+    parser.add_argument("--author-email", type=str, help="Author email for git commits.")
+    parser.add_argument("--branch", type=str, help="Target git branch.")
+    parser.add_argument("--data-file", type=str, help="Path to activity tracking JSON file.")
+    parser.add_argument("--dry-run", action="store_true", help="Simulate run without making commits.")
+    parser.add_argument("--push", action="store_true", help="Push commits to remote repository.")
+    parser.add_argument("--install-task", action="store_true", help="Register daily task in Windows Task Scheduler.")
+    parser.add_argument("--uninstall-task", action="store_true", help="Unregister daily task from Windows Task Scheduler.")
+    parser.add_argument("--task-time", type=str, default="12:00PM", help="Daily execution time for Windows Task Scheduler.")
     return parser.parse_args()
+
+def install_windows_task(task_name="ContributionFarmDaily", task_time="12:00PM"):
+    python_exe = sys.executable
+    script_path = os.path.abspath(__file__)
+    working_dir = os.path.dirname(script_path)
+    cmd = (
+        f"$action = New-ScheduledTaskAction -Execute '{python_exe}' "
+        f"-Argument '\"{script_path}\" --push' -WorkingDirectory '{working_dir}'; "
+        f"$trigger = New-ScheduledTaskTrigger -Daily -At '{task_time}'; "
+        f"$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries; "
+        f"Register-ScheduledTask -TaskName '{task_name}' -Action $action -Trigger $trigger -Settings $settings -Force -Description 'Daily Contribution Farm Runner'"
+    )
+    result = subprocess.run(["powershell", "-NoProfile", "-Command", cmd], capture_output=True, text=True)
+    if result.returncode == 0:
+        print(f"Windows Task Scheduler: '{task_name}' registered successfully to run daily at {task_time}.")
+        write_windows_event_log(
+            f"ContributionFarm: Scheduled daily task '{task_name}' registered for {task_time}.",
+            event_type="Information",
+            event_id=100
+        )
+    else:
+        print(f"Failed to register Windows task: {result.stderr.strip()}", file=sys.stderr)
+
+def uninstall_windows_task(task_name="ContributionFarmDaily"):
+    cmd = f"Unregister-ScheduledTask -TaskName '{task_name}' -Confirm:$false"
+    result = subprocess.run(["powershell", "-NoProfile", "-Command", cmd], capture_output=True, text=True)
+    if result.returncode == 0:
+        print(f"Windows Task Scheduler: '{task_name}' unregistered successfully.")
+        write_windows_event_log(
+            f"ContributionFarm: Scheduled daily task '{task_name}' unregistered.",
+            event_type="Information",
+            event_id=100
+        )
+    else:
+        print(f"Failed to unregister Windows task: {result.stderr.strip()}", file=sys.stderr)
 
 def load_activity_data(file_path):
     if not os.path.exists(file_path):
@@ -113,16 +211,18 @@ def create_contributions(count, author_name, author_email, data_file, dry_run=Fa
         "GIT_COMMITTER_NAME": author_name,
         "GIT_COMMITTER_EMAIL": author_email
     }
+    total_cumulative = 0
     for index in range(1, count + 1):
-        total_so_far = record_activity_entry(data_file, run_id, index, count)
+        total_cumulative = record_activity_entry(data_file, run_id, index, count)
         message = f"chore(farm): update daily activity record [{index}/{count}]"
         if dry_run:
-            print(f"[DRY-RUN] Step {index}/{count} | Cumulative: {total_so_far} | {message}")
+            print(f"[DRY-RUN] Step {index}/{count} | Cumulative: {total_cumulative} | {message}")
         else:
             execute_git(["add", data_file])
             execute_git(["commit", "-m", message], env=git_env)
-            print(f"Committed {index}/{count} (Total: {total_so_far}): {message}")
+            print(f"Committed {index}/{count} (Total: {total_cumulative}): {message}")
     print(f"Successfully processed {count} contribution entries.")
+    return run_id, total_cumulative
 
 def push_changes(branch):
     print(f"Pushing commits to branch '{branch}'...")
@@ -132,18 +232,69 @@ def push_changes(branch):
 
 def main():
     args = parse_arguments()
+    if args.install_task:
+        install_windows_task(task_time=args.task_time)
+        return
+    if args.uninstall_task:
+        uninstall_windows_task()
+        return
+
+    config = load_configuration(args.config)
+    schedule_cfg = config.get("schedule", {})
+    git_cfg = config.get("git", {})
+    win_cfg = config.get("windows_event_log", {})
+
+    count = determine_contribution_count(schedule_cfg, args)
+    author_name = args.author_name or os.environ.get("FARM_AUTHOR_NAME") or git_cfg.get("author_name", "Syqopat")
+    author_email = args.author_email or os.environ.get("FARM_AUTHOR_EMAIL") or git_cfg.get("author_email", "203693835+Syqopat@users.noreply.github.com")
+    branch = args.branch or os.environ.get("FARM_BRANCH") or git_cfg.get("branch", "main")
+    data_file = args.data_file or git_cfg.get("data_file", "data/activity.json")
+    auto_push = args.push or git_cfg.get("auto_push", False)
+
+    start_log_message = (
+        f"ContributionFarm started: Target count={count}, Author={author_name}, "
+        f"Branch={branch}, DryRun={args.dry_run}"
+    )
+    if win_cfg.get("enabled", True):
+        write_windows_event_log(
+            start_log_message,
+            event_type="Information",
+            event_id=win_cfg.get("event_id", 100),
+            log_name=win_cfg.get("log_name", "Application")
+        )
+
     try:
-        create_contributions(
-            count=args.count,
-            author_name=args.author_name,
-            author_email=args.author_email,
-            data_file=args.data_file,
+        run_id, total_cumulative = create_contributions(
+            count=count,
+            author_name=author_name,
+            author_email=author_email,
+            data_file=data_file,
             dry_run=args.dry_run
         )
-        if args.push and not args.dry_run:
-            push_changes(args.branch)
+        if auto_push and not args.dry_run:
+            push_changes(branch)
+
+        finish_log_message = (
+            f"ContributionFarm completed successfully: {count} contributions generated. "
+            f"Run ID={run_id}, Cumulative total={total_cumulative}."
+        )
+        if win_cfg.get("enabled", True):
+            write_windows_event_log(
+                finish_log_message,
+                event_type="Information",
+                event_id=win_cfg.get("event_id", 100),
+                log_name=win_cfg.get("log_name", "Application")
+            )
     except Exception as exc:
-        print(f"Error executing contribution farm: {exc}", file=sys.stderr)
+        error_message = f"ContributionFarm failed: {exc}"
+        print(error_message, file=sys.stderr)
+        if win_cfg.get("enabled", True):
+            write_windows_event_log(
+                error_message,
+                event_type="Error",
+                event_id=win_cfg.get("event_id", 100),
+                log_name=win_cfg.get("log_name", "Application")
+            )
         sys.exit(1)
 
 if __name__ == "__main__":
