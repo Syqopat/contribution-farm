@@ -7,15 +7,20 @@ import tempfile
 import unittest
 
 from farm import (
+    append_file_log,
     backfill_history,
     calculate_commit_timestamp,
     create_contributions,
     determine_contribution_count,
     generate_commit_message,
+    get_cron_command,
     load_activity_data,
     load_configuration,
+    parse_task_time,
     record_activity_entry,
     save_activity_data,
+    write_linux_syslog,
+    write_telemetry_event,
     write_windows_event_log,
 )
 
@@ -24,6 +29,7 @@ class TestContributionFarm(unittest.TestCase):
         self.test_dir = tempfile.mkdtemp()
         self.data_file = os.path.join(self.test_dir, "test_activity.json")
         self.config_file = os.path.join(self.test_dir, "test_config.json")
+        self.log_file = os.path.join(self.test_dir, "test_farm.log")
 
     def tearDown(self):
         shutil.rmtree(self.test_dir, ignore_errors=True)
@@ -90,6 +96,49 @@ class TestContributionFarm(unittest.TestCase):
     def test_windows_event_log_execution(self):
         result = write_windows_event_log("Test event message from test suite")
         self.assertIsInstance(result, bool)
+
+    def test_parse_task_time(self):
+        self.assertEqual(parse_task_time("12:00PM"), (12, 0))
+        self.assertEqual(parse_task_time("12:00AM"), (0, 0))
+        self.assertEqual(parse_task_time("02:30PM"), (14, 30))
+        self.assertEqual(parse_task_time("9:15AM"), (9, 15))
+        self.assertEqual(parse_task_time("14:45"), (14, 45))
+        self.assertEqual(parse_task_time("invalid"), (12, 0))
+
+    def test_cron_command_generation(self):
+        cmd = get_cron_command("/path/to/farm.py", "/path/to", python_exe="/usr/bin/python3")
+        self.assertIn("cd '/path/to'", cmd)
+        self.assertIn("'/usr/bin/python3'", cmd)
+        self.assertIn("'/path/to/farm.py' --push", cmd)
+        self.assertIn("# ContributionFarmDaily", cmd)
+
+    def test_append_file_log(self):
+        result = append_file_log("Test unit log message", event_type="Information", log_file=self.log_file)
+        self.assertTrue(result)
+        self.assertTrue(os.path.exists(self.log_file))
+        with open(self.log_file, "r", encoding="utf-8") as f:
+            content = f.read()
+        self.assertIn("[INFORMATION] Test unit log message", content)
+
+    def test_linux_syslog_execution(self):
+        result = write_linux_syslog("Test Linux Syslog from test suite")
+        self.assertIsInstance(result, bool)
+
+    def test_write_telemetry_event(self):
+        cfg = {
+            "telemetry": {
+                "enabled": True,
+                "file_log": True,
+                "log_file": self.log_file,
+                "syslog_ident": "ContributionFarmTest"
+            }
+        }
+        success = write_telemetry_event("Test telemetry dispatch", event_type="Information", config=cfg)
+        self.assertIsInstance(success, bool)
+        self.assertTrue(os.path.exists(self.log_file))
+        with open(self.log_file, "r", encoding="utf-8") as f:
+            content = f.read()
+        self.assertIn("Test telemetry dispatch", content)
 
 if __name__ == "__main__":
     unittest.main()

@@ -2,20 +2,73 @@
 
 [![CI](https://github.com/Syqopat/contribution-farm/actions/workflows/ci.yml/badge.svg)](https://github.com/Syqopat/contribution-farm/actions/workflows/ci.yml)
 [![Daily Contribution Farm](https://github.com/Syqopat/contribution-farm/actions/workflows/daily-contributions.yml/badge.svg)](https://github.com/Syqopat/contribution-farm/actions/workflows/daily-contributions.yml)
+[![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20Windows-blue.svg)](#)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python Version](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 
-Contribution Farm is an automated open-source GitHub activity engine and contribution manager. It provides configurable daily runs, dynamic randomized contribution ranges, automatic Windows Event Log telemetry, and native Windows Task Scheduler integration alongside cloud GitHub Actions workflows.
+Contribution Farm is an automated open-source GitHub activity engine and contribution manager with full cross-platform support for **Linux** and **Windows**. It provides configurable daily schedules, dynamic randomized contribution ranges, cross-platform telemetry (Linux Syslog / journalctl & Windows Event Log), and native OS scheduling (Linux Crontab, Systemd user timers, and Windows Task Scheduler) alongside cloud GitHub Actions workflows.
+
+---
 
 ## Key Features
 
-- **Automated Daily Scheduling**: Operates daily via GitHub Actions in the cloud and natively via Windows Task Scheduler locally.
+- **Cross-Platform Scheduling**: Runs natively on Linux via **Crontab** or **Systemd User Timers**, on Windows via **Task Scheduler**, and in the cloud via **GitHub Actions**.
 - **Configurable Contribution Engine**: Fully customizable via `config.json` with support for fixed quotas or dynamic randomized ranges.
-- **Dynamic Randomization**: Generates a randomized number of contributions within a specified range (for example, between 3 and 7 commits per day) to simulate realistic developer activity patterns.
-- **Windows Event Log Telemetry**: Automatically records run lifecycle events (start status, commit counts, cumulative totals, errors) directly into the Windows Application Event Log.
-- **Task Scheduler Integration**: One-command installation and uninstallation of daily background tasks on Windows.
+- **Dynamic Randomization**: Generates a natural, randomized number of contributions within a specified range (e.g. 3 to 7 commits/day) to simulate authentic developer activity.
+- **Weekend Awareness**: Automatically reduces quotas or skips contributions entirely on weekends according to your preferences.
+- **Jitter & Natural Timestamps**: Naturally disperses commit timestamps across an execution window instead of clustering them in a single second.
+- **Cross-Platform Telemetry**:
+  - **Linux**: Automatically streams lifecycle events to the system log (`syslog` / `journalctl`).
+  - **Windows**: Automatically logs start, completion, and error events to the Windows `Application` Event Log.
+  - **File Logging**: Appends timestamped execution records to `farm.log`.
+- **Silent Background Execution**:
+  - **Linux**: Execute silently in the background with `./run_silent.sh`.
+  - **Windows**: Execute silently with no popup window using `run_silent.vbs`.
 - **Structured Activity Ledger**: Tracks every contribution batch with UUIDs, timestamps, cumulative counts, and run parameters inside `data/activity.json`.
-- **Zero Third-Party Dependencies**: Pure Python standard library implementation with optional native `pywin32` / PowerShell fallbacks.
+- **Zero Third-Party Dependencies**: Pure Python standard library implementation with zero external package requirements.
+
+---
+
+## Quick Start
+
+### On Linux
+
+```bash
+# Clone the repository
+git clone https://github.com/Syqopat/contribution-farm.git
+cd contribution-farm
+
+# Ensure script is executable
+chmod +x farm.py run_silent.sh
+
+# Run a test dry-run
+./farm.py --dry-run
+
+# Run and push contributions
+./farm.py --push
+
+# Register automated daily cron job at 12:00 PM
+./farm.py --install-cron --task-time "12:00PM"
+```
+
+### On Windows
+
+```cmd
+# Clone the repository
+git clone https://github.com/Syqopat/contribution-farm.git
+cd contribution-farm
+
+# Run a test dry-run
+python farm.py --dry-run
+
+# Run and push contributions
+python farm.py --push
+
+# Register automated daily task at 12:00 PM
+python farm.py --install-task --task-time "12:00PM"
+```
+
+---
 
 ## Configuration (`config.json`)
 
@@ -43,6 +96,13 @@ The application is controlled by `config.json` at the root of the repository:
     "auto_push": true,
     "data_file": "data/activity.json"
   },
+  "telemetry": {
+    "enabled": true,
+    "system_log": true,
+    "file_log": true,
+    "log_file": "farm.log",
+    "syslog_ident": "ContributionFarm"
+  },
   "windows_event_log": {
     "enabled": true,
     "log_name": "Application",
@@ -68,17 +128,76 @@ The application is controlled by `config.json` at the root of the repository:
 | `schedule` | `jitter_enabled` | Boolean | `true` | Naturally spreads commit timestamps across a time window |
 | `schedule` | `jitter_spread_minutes` | Integer | `180` | Distribution window size in minutes |
 | `git` | `author_name` | String | `"Syqopat"` | Git commit author and committer name |
-| `git` | `author_email` | String | `"203693835+Syqopat@users.noreply.github.com"` | Git commit author and committer email |
+| `git` | `author_email` | String | `"<your-email>"` | Git commit author and committer email |
 | `git` | `branch` | String | `"main"` | Target branch to update and push |
 | `git` | `auto_push` | Boolean | `true` | Automatically pushes commits to remote |
 | `git` | `data_file` | String | `"data/activity.json"` | Path to JSON activity ledger |
-| `windows_event_log` | `enabled` | Boolean | `true` | Enables writing telemetry to Windows Event Log |
+| `telemetry` | `enabled` | Boolean | `true` | Enables system and file telemetry logging |
+| `telemetry` | `system_log` | Boolean | `true` | Enables Linux `syslog` / Windows Event Log |
+| `telemetry` | `file_log` | Boolean | `true` | Enables appending run events to `farm.log` |
+| `telemetry` | `log_file` | String | `"farm.log"` | Path to the local log file |
+| `telemetry` | `syslog_ident` | String | `"ContributionFarm"` | Syslog identifier tag on Linux |
+| `windows_event_log` | `enabled` | Boolean | `true` | Enables Windows Event Log telemetry |
 | `windows_event_log` | `log_name` | String | `"Application"` | Windows Event Log channel |
-| `windows_event_log` | `event_id` | Integer | `100` | Event ID used for recorded entries |
+| `windows_event_log` | `event_id` | Integer | `100` | Event ID used for recorded entries on Windows |
+
+---
 
 ## Automation Setup
 
-### 1. Windows Task Scheduler (Daily Local Automation)
+### 1. Linux Automation
+
+Contribution Farm provides two native Linux scheduling options:
+
+#### Option A: Crontab (Recommended for universal Linux support)
+
+Install a daily scheduled job in user crontab:
+
+```bash
+# Register daily execution at 12:00 PM (or specify any time like "14:30")
+./farm.py --install-cron --task-time "12:00PM"
+
+# Or use the OS-agnostic flag:
+./farm.py --install-task --task-time "12:00PM"
+```
+
+To remove the cron job:
+
+```bash
+./farm.py --uninstall-cron
+```
+
+#### Option B: Systemd User Timer (For modern systemd environments)
+
+Register and activate a persistent systemd user service and timer:
+
+```bash
+./farm.py --install-systemd --task-time "12:00PM"
+```
+
+To remove the systemd user service and timer:
+
+```bash
+./farm.py --uninstall-systemd
+```
+
+### 2. Linux Silent Execution (`run_silent.sh`)
+
+To run the farm silently in the background on Linux on demand:
+
+```bash
+./run_silent.sh
+```
+
+Or pass custom arguments:
+
+```bash
+./run_silent.sh --randomize --min 4 --max 8
+```
+
+---
+
+### 3. Windows Task Scheduler
 
 To register Contribution Farm to run automatically every day on Windows:
 
@@ -94,14 +213,16 @@ To remove the scheduled task:
 python farm.py --uninstall-task
 ```
 
-### 2. Instant Silent Execution (`run_silent.vbs`)
+### 4. Windows Silent Execution (`run_silent.vbs`)
 
 To run the farm silently in the background on demand without any command prompt window:
 
 - Double-click `run_silent.vbs`, or
 - Run `wscript.exe run_silent.vbs` from terminal or shortcut.
 
-### 3. GitHub Actions (Daily Cloud Automation)
+---
+
+### 5. GitHub Actions (Daily Cloud Automation)
 
 Contribution Farm runs in GitHub Actions every day at 12:00 UTC. Ensure workflow write permissions are active:
 
@@ -112,44 +233,58 @@ Contribution Farm runs in GitHub Actions every day at 12:00 UTC. Ensure workflow
 
 You can also trigger runs on demand via the **Actions** tab with custom mode and contribution counts.
 
-## Windows Event Log Telemetry
+---
 
-Every execution writes telemetry events to the Windows `Application` log:
+## Telemetry & Diagnostics
 
-- **Start Event**: Logs execution start, targeted contribution quota, branch, and configuration mode.
-- **Completion Event**: Logs the successful run ID, total contributions produced, and overall cumulative count.
-- **Error Event**: Logs any uncaught exceptions with full diagnostic details.
+Every execution records lifecycle events (start status, commit counts, cumulative totals, errors):
 
-To view logged events in PowerShell:
+### Viewing Telemetry on Linux
+
+View logs recorded in the system journal:
+
+```bash
+# View recent system journal logs
+journalctl -t ContributionFarm -n 20 --no-pager
+
+# Or view the persistent local log file
+tail -n 20 farm.log
+```
+
+### Viewing Telemetry on Windows
+
+View logged events in PowerShell:
 
 ```powershell
 Get-EventLog -LogName Application -Source Application -Newest 5 | Format-List TimeGenerated, Message
 ```
+
+---
 
 ## Local CLI Usage
 
 Run using `config.json` settings:
 
 ```bash
-python farm.py --push
+./farm.py --push
 ```
 
 Generate a randomized number of contributions between 2 and 6:
 
 ```bash
-python farm.py --randomize --min 2 --max 6 --push
+./farm.py --randomize --min 2 --max 6 --push
 ```
 
 Run in dry-run mode to preview without committing:
 
 ```bash
-python farm.py --dry-run
+./farm.py --dry-run
 ```
 
 Generate an explicit fixed count of 10 contributions:
 
 ```bash
-python farm.py --count 10 --push
+./farm.py --count 10 --push
 ```
 
 ### Command Line Arguments
@@ -173,9 +308,16 @@ python farm.py --count 10 --push
 | `--backfill-days` | Integer | Backfill contributions for the last N days |
 | `--backfill-start` | String | Historical backfill start date (`YYYY-MM-DD`) |
 | `--backfill-end` | String | Historical backfill end date (`YYYY-MM-DD`) |
-| `--install-task` | Flag | Register Windows scheduled task |
-| `--uninstall-task` | Flag | Unregister Windows scheduled task |
-| `--task-time` | String | Scheduled daily execution time (e.g. `"12:00PM"`) |
+| `--install-task` | Flag | Register scheduled daily task (Windows Task Scheduler or Linux Cron) |
+| `--uninstall-task` | Flag | Unregister scheduled daily task |
+| `--install-cron` | Flag | Register daily task in Linux Crontab |
+| `--uninstall-cron` | Flag | Unregister daily task from Linux Crontab |
+| `--install-systemd` | Flag | Register daily task as Linux Systemd user timer |
+| `--uninstall-systemd` | Flag | Unregister daily task from Linux Systemd |
+| `--scheduler` | String | Scheduler backend on Linux (`auto`, `cron`, `systemd`) |
+| `--task-time` | String | Scheduled daily execution time (e.g. `"12:00PM"`, `"14:30"`) |
+
+---
 
 ## Historical Backfilling
 
@@ -184,14 +326,16 @@ To populate past empty dates on your GitHub contribution graph with realistic co
 Backfill the last 14 days:
 
 ```bash
-python farm.py --backfill-days 14 --push
+./farm.py --backfill-days 14 --push
 ```
 
 Backfill a specific historical date range:
 
 ```bash
-python farm.py --backfill-start 2026-09-01 --backfill-end 2026-09-30 --push
+./farm.py --backfill-start 2026-09-01 --backfill-end 2026-09-30 --push
 ```
+
+---
 
 ## Verified SSH Commit Signing
 
@@ -207,19 +351,25 @@ To display the green **Verified** badge next to your commits on GitHub:
 3. Set **Key type** to **Signing Key**.
 4. Paste the key and click **Add SSH key**.
 
+---
+
 ## Running Tests
 
-Execute all unit tests:
+Execute all unit tests across both platforms:
 
 ```bash
-python -m unittest discover tests
+python3 -m unittest discover tests
 ```
+
+---
 
 ## Community and Governance
 
 - [Contributing Guidelines](CONTRIBUTING.md)
 - [Code of Conduct](CODE_OF_CONDUCT.md)
 - [Security Policy](SECURITY.md)
+
+---
 
 ## License
 

@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import argparse
 import datetime
 import json
@@ -14,6 +15,12 @@ if sys.platform == "win32":
         sys.stderr = open(os.devnull, "w", encoding="utf-8")
 
 NO_WINDOW_FLAG = 0x08000000 if sys.platform == "win32" else 0
+CRON_TAG = "# ContributionFarmDaily"
+
+def _get_subprocess_kwargs():
+    if sys.platform == "win32":
+        return {"creationflags": NO_WINDOW_FLAG}
+    return {}
 
 REALISTIC_COMMIT_TEMPLATES = [
     "feat(engine): refine background telemetry dispatcher",
@@ -54,6 +61,13 @@ DEFAULT_CONFIG = {
         "auto_push": True,
         "data_file": "data/activity.json"
     },
+    "telemetry": {
+        "enabled": True,
+        "system_log": True,
+        "file_log": True,
+        "log_file": "farm.log",
+        "syslog_ident": "ContributionFarm"
+    },
     "windows_event_log": {
         "enabled": True,
         "log_name": "Application",
@@ -64,10 +78,11 @@ DEFAULT_CONFIG = {
 
 def get_silent_python_executable():
     current_exe = sys.executable
-    dir_name = os.path.dirname(current_exe)
-    candidate = os.path.join(dir_name, "pythonw.exe")
-    if os.path.exists(candidate):
-        return candidate
+    if sys.platform == "win32":
+        dir_name = os.path.dirname(current_exe)
+        candidate = os.path.join(dir_name, "pythonw.exe")
+        if os.path.exists(candidate):
+            return candidate
     return current_exe
 
 def load_configuration(config_file_path):
@@ -162,15 +177,300 @@ def write_windows_event_log(message, event_type="Information", event_id=100, log
                 capture_output=True,
                 text=True,
                 check=False,
-                creationflags=NO_WINDOW_FLAG
+                **_get_subprocess_kwargs()
             )
             return True
         except Exception:
             return False
 
+def write_linux_syslog(message, event_type="Information", ident="ContributionFarm"):
+    if not (sys.platform.startswith("linux") or sys.platform == "darwin"):
+        return False
+    try:
+        import syslog
+        priority_map = {
+            "Information": syslog.LOG_INFO,
+            "Warning": syslog.LOG_WARNING,
+            "Error": syslog.LOG_ERR,
+        }
+        level = priority_map.get(event_type, syslog.LOG_INFO)
+        syslog.openlog(ident=ident, facility=syslog.LOG_USER)
+        syslog.syslog(level, message)
+        syslog.closelog()
+        return True
+    except Exception:
+        try:
+            priority_flag = "user.info" if event_type == "Information" else ("user.warning" if event_type == "Warning" else "user.err")
+            subprocess.run(["logger", "-t", ident, "-p", priority_flag, message], check=False, **_get_subprocess_kwargs())
+            return True
+        except Exception:
+            return False
+
+def append_file_log(message, event_type="Information", log_file="farm.log"):
+    try:
+        now_str = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+        with open(log_file, "a", encoding="utf-8") as f:
+            f.write(f"[{now_str}] [{event_type.upper()}] {message}\n")
+        return True
+    except Exception:
+        return False
+
+def write_telemetry_event(message, event_type="Information", config=None):
+    cfg = config or {}
+    telemetry_cfg = cfg.get("telemetry", {})
+    win_cfg = cfg.get("windows_event_log", {})
+    enabled = telemetry_cfg.get("enabled", win_cfg.get("enabled", True))
+    if not enabled:
+        return False
+
+    success = False
+    if sys.platform == "win32":
+        success = write_windows_event_log(
+            message=message,
+            event_type=event_type,
+            event_id=win_cfg.get("event_id", 100),
+            log_name=win_cfg.get("log_name", "Application")
+        )
+    else:
+        ident = telemetry_cfg.get("syslog_ident", "ContributionFarm")
+        success = write_linux_syslog(message=message, event_type=event_type, ident=ident)
+
+    if telemetry_cfg.get("file_log", True):
+        log_file = telemetry_cfg.get("log_file", "farm.log")
+        if log_file:
+            append_file_log(message=message, event_type=event_type, log_file=log_file)
+
+    return success
+
+def parse_task_time(task_time_str):
+    """
+    Parses time formats: '12:00PM', '02:30PM', '9:15AM', '14:30', or '12:00'
+    into (hour_24, minute). Defaults to (12, 0) upon malformed inputs.
+    """
+    time_str = str(task_time_str).strip().upper()
+    is_pm = "PM" in time_str
+    is_am = "AM" in time_str
+    cleaned = time_str.replace("PM", "").replace("AM", "").strip()
+    parts = cleaned.split(":")
+    if len(parts) != 2:
+        return 12, 0
+    try:
+        hour = int(parts[0])
+        minute = int(parts[1])
+    except ValueError:
+        return 12, 0
+
+    if is_pm and hour < 12:
+        hour += 12
+    elif is_am and hour == 12:
+        hour = 0
+    return max(0, min(23, hour)), max(0, min(59, minute))
+
+def get_cron_command(script_path, working_dir, python_exe=None):
+    py_bin = python_exe or sys.executable
+    log_path = os.path.join(working_dir, "farm.log")
+    return f"cd '{working_dir}' && '{py_bin}' '{script_path}' --push >> '{log_path}' 2>&1 {CRON_TAG}"
+
+def install_cron_task(task_time="12:00PM", script_path=None, working_dir=None):
+    script_path = os.path.abspath(script_path or __file__)
+    working_dir = working_dir or os.path.dirname(script_path)
+    hour, minute = parse_task_time(task_time)
+    cron_cmd = get_cron_command(script_path, working_dir)
+    cron_line = f"{minute} {hour} * * * {cron_cmd}"
+
+    try:
+        proc = subprocess.run(["crontab", "-l"], capture_output=True, text=True, check=False)
+        current_crontab = proc.stdout if proc.returncode == 0 else ""
+        lines = [line for line in current_crontab.splitlines() if CRON_TAG not in line and line.strip()]
+        lines.append(cron_line)
+        new_crontab = "\n".join(lines) + "\n"
+        sub = subprocess.run(["crontab", "-"], input=new_crontab, text=True, capture_output=True)
+        if sub.returncode == 0:
+            print(f"Crontab: Daily contribution task registered successfully for {hour:02d}:{minute:02d}.")
+            write_telemetry_event(
+                f"ContributionFarm: Crontab daily task registered for {hour:02d}:{minute:02d}.",
+                event_type="Information"
+            )
+            return True
+        else:
+            print(f"Failed to register cron task: {sub.stderr.strip()}", file=sys.stderr)
+            return False
+    except Exception as exc:
+        print(f"Error registering crontab: {exc}", file=sys.stderr)
+        return False
+
+def uninstall_cron_task():
+    try:
+        proc = subprocess.run(["crontab", "-l"], capture_output=True, text=True, check=False)
+        if proc.returncode != 0:
+            print("No crontab found to uninstall.")
+            return True
+        lines = [line for line in proc.stdout.splitlines() if CRON_TAG not in line and line.strip()]
+        if not lines:
+            subprocess.run(["crontab", "-r"], capture_output=True, check=False)
+        else:
+            new_crontab = "\n".join(lines) + "\n"
+            subprocess.run(["crontab", "-"], input=new_crontab, text=True, capture_output=True, check=True)
+        print("Crontab: Contribution Farm scheduled job removed successfully.")
+        write_telemetry_event(
+            "ContributionFarm: Crontab daily task unregistered.",
+            event_type="Information"
+        )
+        return True
+    except Exception as exc:
+        print(f"Error removing crontab entry: {exc}", file=sys.stderr)
+        return False
+
+def install_systemd_task(task_time="12:00PM", script_path=None, working_dir=None):
+    script_path = os.path.abspath(script_path or __file__)
+    working_dir = working_dir or os.path.dirname(script_path)
+    hour, minute = parse_task_time(task_time)
+    time_formatted = f"{hour:02d}:{minute:02d}:00"
+
+    systemd_user_dir = os.path.expanduser("~/.config/systemd/user")
+    os.makedirs(systemd_user_dir, exist_ok=True)
+
+    service_file = os.path.join(systemd_user_dir, "contribution-farm.service")
+    timer_file = os.path.join(systemd_user_dir, "contribution-farm.timer")
+
+    service_content = f"""[Unit]
+Description=Daily Contribution Farm Runner
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory={working_dir}
+ExecStart={sys.executable} "{script_path}" --push
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
+"""
+
+    timer_content = f"""[Unit]
+Description=Daily Timer for Contribution Farm
+Requires=contribution-farm.service
+
+[Timer]
+OnCalendar=*-*-* {time_formatted}
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+"""
+
+    try:
+        with open(service_file, "w", encoding="utf-8") as f:
+            f.write(service_content)
+        with open(timer_file, "w", encoding="utf-8") as f:
+            f.write(timer_content)
+
+        subprocess.run(["systemctl", "--user", "daemon-reload"], check=True, capture_output=True)
+        subprocess.run(["systemctl", "--user", "enable", "--now", "contribution-farm.timer"], check=True, capture_output=True)
+        print(f"Systemd: Timer 'contribution-farm.timer' registered and activated for daily execution at {time_formatted}.")
+        write_telemetry_event(
+            f"ContributionFarm: Systemd user timer registered for daily run at {time_formatted}.",
+            event_type="Information"
+        )
+        return True
+    except Exception as exc:
+        print(f"Failed to register systemd timer: {exc}", file=sys.stderr)
+        return False
+
+def uninstall_systemd_task():
+    systemd_user_dir = os.path.expanduser("~/.config/systemd/user")
+    service_file = os.path.join(systemd_user_dir, "contribution-farm.service")
+    timer_file = os.path.join(systemd_user_dir, "contribution-farm.timer")
+
+    try:
+        subprocess.run(["systemctl", "--user", "disable", "--now", "contribution-farm.timer"], capture_output=True, check=False)
+        for p in (timer_file, service_file):
+            if os.path.exists(p):
+                try:
+                    os.remove(p)
+                except OSError:
+                    pass
+        subprocess.run(["systemctl", "--user", "daemon-reload"], capture_output=True, check=False)
+        print("Systemd: 'contribution-farm.timer' and service unregistered successfully.")
+        write_telemetry_event(
+            "ContributionFarm: Systemd user timer unregistered.",
+            event_type="Information"
+        )
+        return True
+    except Exception as exc:
+        print(f"Failed to unregister systemd task: {exc}", file=sys.stderr)
+        return False
+
+def install_task(task_time="12:00PM", scheduler="auto"):
+    if sys.platform == "win32":
+        install_windows_task(task_time=task_time)
+    else:
+        if scheduler == "systemd":
+            install_systemd_task(task_time=task_time)
+        else:
+            install_cron_task(task_time=task_time)
+
+def uninstall_task(scheduler="auto"):
+    if sys.platform == "win32":
+        uninstall_windows_task()
+    else:
+        if scheduler == "systemd":
+            uninstall_systemd_task()
+        elif scheduler == "cron":
+            uninstall_cron_task()
+        else:
+            uninstall_cron_task()
+            uninstall_systemd_task()
+
+def install_windows_task(task_name="ContributionFarmDaily", task_time="12:00PM"):
+    python_exe = get_silent_python_executable()
+    script_path = os.path.abspath(__file__)
+    working_dir = os.path.dirname(script_path)
+    cmd = (
+        f"$action = New-ScheduledTaskAction -Execute '{python_exe}' "
+        f"-Argument '\"{script_path}\" --push' -WorkingDirectory '{working_dir}'; "
+        f"$trigger = New-ScheduledTaskTrigger -Daily -At '{task_time}'; "
+        f"$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries "
+        f"-DontStopIfGoingOnBatteries -StartWhenAvailable -Hidden; "
+        f"Register-ScheduledTask -TaskName '{task_name}' -Action $action -Trigger $trigger -Settings $settings -Force -Description 'Daily Silent Contribution Farm Runner'"
+    )
+    result = subprocess.run(
+        ["powershell", "-NoProfile", "-Command", cmd],
+        capture_output=True,
+        text=True,
+        **_get_subprocess_kwargs()
+    )
+    if result.returncode == 0:
+        print(f"Windows Task Scheduler: '{task_name}' registered successfully as silent background task at {task_time} (using {os.path.basename(python_exe)}).")
+        write_telemetry_event(
+            f"ContributionFarm: Silent daily task '{task_name}' registered for {task_time} with {os.path.basename(python_exe)}.",
+            event_type="Information"
+        )
+    else:
+        print(f"Failed to register Windows task: {result.stderr.strip()}", file=sys.stderr)
+
+def uninstall_windows_task(task_name="ContributionFarmDaily"):
+    cmd = f"Unregister-ScheduledTask -TaskName '{task_name}' -Confirm:$false"
+    result = subprocess.run(
+        ["powershell", "-NoProfile", "-Command", cmd],
+        capture_output=True,
+        text=True,
+        **_get_subprocess_kwargs()
+    )
+    if result.returncode == 0:
+        print(f"Windows Task Scheduler: '{task_name}' unregistered successfully.")
+        write_telemetry_event(
+            f"ContributionFarm: Scheduled daily task '{task_name}' unregistered.",
+            event_type="Information"
+        )
+    else:
+        print(f"Failed to unregister Windows task: {result.stderr.strip()}", file=sys.stderr)
+
 def parse_arguments():
     parser = argparse.ArgumentParser(
-        description="Automated GitHub contribution generator and activity manager."
+        description="Automated GitHub contribution generator and activity manager for Linux & Windows."
     )
     parser.add_argument("--config", type=str, default="config.json", help="Path to config.json file.")
     parser.add_argument("--mode", type=str, choices=["fixed", "random"], help="Execution mode: fixed or random.")
@@ -189,56 +489,15 @@ def parse_arguments():
     parser.add_argument("--backfill-days", type=int, help="Backfill realistic contributions for the last N days.")
     parser.add_argument("--backfill-start", type=str, help="Historical backfill start date (YYYY-MM-DD).")
     parser.add_argument("--backfill-end", type=str, help="Historical backfill end date (YYYY-MM-DD).")
-    parser.add_argument("--install-task", action="store_true", help="Register silent daily task in Windows Task Scheduler.")
-    parser.add_argument("--uninstall-task", action="store_true", help="Unregister daily task from Windows Task Scheduler.")
-    parser.add_argument("--task-time", type=str, default="12:00PM", help="Daily execution time for Windows Task Scheduler.")
+    parser.add_argument("--install-task", action="store_true", help="Register scheduled daily background task (OS native).")
+    parser.add_argument("--uninstall-task", action="store_true", help="Unregister scheduled daily task.")
+    parser.add_argument("--install-cron", action="store_true", help="Register daily task in Linux Crontab.")
+    parser.add_argument("--uninstall-cron", action="store_true", help="Unregister daily task from Linux Crontab.")
+    parser.add_argument("--install-systemd", action="store_true", help="Register daily task as Linux Systemd user timer.")
+    parser.add_argument("--uninstall-systemd", action="store_true", help="Unregister daily task from Linux Systemd.")
+    parser.add_argument("--scheduler", type=str, choices=["auto", "cron", "systemd"], default="auto", help="Scheduler backend for Linux (auto, cron, systemd).")
+    parser.add_argument("--task-time", type=str, default="12:00PM", help="Daily execution time (e.g. '12:00PM', '14:30').")
     return parser.parse_args()
-
-def install_windows_task(task_name="ContributionFarmDaily", task_time="12:00PM"):
-    python_exe = get_silent_python_executable()
-    script_path = os.path.abspath(__file__)
-    working_dir = os.path.dirname(script_path)
-    cmd = (
-        f"$action = New-ScheduledTaskAction -Execute '{python_exe}' "
-        f"-Argument '\"{script_path}\" --push' -WorkingDirectory '{working_dir}'; "
-        f"$trigger = New-ScheduledTaskTrigger -Daily -At '{task_time}'; "
-        f"$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries "
-        f"-DontStopIfGoingOnBatteries -StartWhenAvailable -Hidden; "
-        f"Register-ScheduledTask -TaskName '{task_name}' -Action $action -Trigger $trigger -Settings $settings -Force -Description 'Daily Silent Contribution Farm Runner'"
-    )
-    result = subprocess.run(
-        ["powershell", "-NoProfile", "-Command", cmd],
-        capture_output=True,
-        text=True,
-        creationflags=NO_WINDOW_FLAG
-    )
-    if result.returncode == 0:
-        print(f"Windows Task Scheduler: '{task_name}' registered successfully as silent background task at {task_time} (using {os.path.basename(python_exe)}).")
-        write_windows_event_log(
-            f"ContributionFarm: Silent daily task '{task_name}' registered for {task_time} with {os.path.basename(python_exe)}.",
-            event_type="Information",
-            event_id=100
-        )
-    else:
-        print(f"Failed to register Windows task: {result.stderr.strip()}", file=sys.stderr)
-
-def uninstall_windows_task(task_name="ContributionFarmDaily"):
-    cmd = f"Unregister-ScheduledTask -TaskName '{task_name}' -Confirm:$false"
-    result = subprocess.run(
-        ["powershell", "-NoProfile", "-Command", cmd],
-        capture_output=True,
-        text=True,
-        creationflags=NO_WINDOW_FLAG
-    )
-    if result.returncode == 0:
-        print(f"Windows Task Scheduler: '{task_name}' unregistered successfully.")
-        write_windows_event_log(
-            f"ContributionFarm: Scheduled daily task '{task_name}' unregistered.",
-            event_type="Information",
-            event_id=100
-        )
-    else:
-        print(f"Failed to unregister Windows task: {result.stderr.strip()}", file=sys.stderr)
 
 def load_activity_data(file_path):
     if not os.path.exists(file_path):
@@ -279,7 +538,7 @@ def execute_git(args, env=None):
         capture_output=True,
         text=True,
         env=process_env,
-        creationflags=NO_WINDOW_FLAG
+        **_get_subprocess_kwargs()
     )
     if result.returncode != 0:
         raise RuntimeError(f"Git command failed: git {' '.join(args)}\n{result.stderr.strip()}")
@@ -316,7 +575,10 @@ def create_contributions(
             spread_minutes=spread_minutes
         )
         timestamp_iso = commit_time.isoformat()
-        total_cumulative = record_activity_entry(data_file, run_id, index, count, timestamp=timestamp_iso)
+        if dry_run:
+            total_cumulative = load_activity_data(data_file).get("total_contributions", 0) + index
+        else:
+            total_cumulative = record_activity_entry(data_file, run_id, index, count, timestamp=timestamp_iso)
         message = generate_commit_message(index, count, mode=message_mode)
         formatted_date = commit_time.strftime("%Y-%m-%d %H:%M:%S +0000")
         git_env = {
@@ -384,17 +646,28 @@ def push_changes(branch):
 
 def main():
     args = parse_arguments()
+    if args.install_cron:
+        install_cron_task(task_time=args.task_time)
+        return
+    if args.uninstall_cron:
+        uninstall_cron_task()
+        return
+    if args.install_systemd:
+        install_systemd_task(task_time=args.task_time)
+        return
+    if args.uninstall_systemd:
+        uninstall_systemd_task()
+        return
     if args.install_task:
-        install_windows_task(task_time=args.task_time)
+        install_task(task_time=args.task_time, scheduler=args.scheduler)
         return
     if args.uninstall_task:
-        uninstall_windows_task()
+        uninstall_task(scheduler=args.scheduler)
         return
 
     config = load_configuration(args.config)
     schedule_cfg = config.get("schedule", {})
     git_cfg = config.get("git", {})
-    win_cfg = config.get("windows_event_log", {})
 
     author_name = args.author_name or os.environ.get("FARM_AUTHOR_NAME") or git_cfg.get("author_name", "Syqopat")
     author_email = args.author_email or os.environ.get("FARM_AUTHOR_EMAIL") or git_cfg.get("author_email", "203693835+Syqopat@users.noreply.github.com")
@@ -444,13 +717,7 @@ def main():
         f"ContributionFarm started: Target count={count}, Author={author_name}, "
         f"Branch={branch}, DryRun={args.dry_run}"
     )
-    if win_cfg.get("enabled", True):
-        write_windows_event_log(
-            start_log_message,
-            event_type="Information",
-            event_id=win_cfg.get("event_id", 100),
-            log_name=win_cfg.get("log_name", "Application")
-        )
+    write_telemetry_event(start_log_message, event_type="Information", config=config)
 
     try:
         run_id, total_cumulative = create_contributions(
@@ -470,23 +737,11 @@ def main():
             f"ContributionFarm completed successfully: {count} contributions generated. "
             f"Run ID={run_id}, Cumulative total={total_cumulative}."
         )
-        if win_cfg.get("enabled", True):
-            write_windows_event_log(
-                finish_log_message,
-                event_type="Information",
-                event_id=win_cfg.get("event_id", 100),
-                log_name=win_cfg.get("log_name", "Application")
-            )
+        write_telemetry_event(finish_log_message, event_type="Information", config=config)
     except Exception as exc:
         error_message = f"ContributionFarm failed: {exc}"
         print(error_message, file=sys.stderr)
-        if win_cfg.get("enabled", True):
-            write_windows_event_log(
-                error_message,
-                event_type="Error",
-                event_id=win_cfg.get("event_id", 100),
-                log_name=win_cfg.get("log_name", "Application")
-            )
+        write_telemetry_event(error_message, event_type="Error", config=config)
         sys.exit(1)
 
 if __name__ == "__main__":

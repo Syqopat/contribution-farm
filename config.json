@@ -19,6 +19,13 @@
     "auto_push": true,
     "data_file": "data/activity.json"
   },
+  "telemetry": {
+    "enabled": true,
+    "system_log": true,
+    "file_log": true,
+    "log_file": "farm.log",
+    "syslog_ident": "ContributionFarm"
+  },
   "windows_event_log": {
     "enabled": true,
     "log_name": "Application",
